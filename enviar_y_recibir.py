@@ -1,185 +1,191 @@
 import paho.mqtt.client as mqtt
-import threading
-import time
 import psutil
 import platform
+import datetime
+import os
 import smtplib
 from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+import mysql.connector
 
-# Crear un bloqueo para la sincronización de la salida
-print_lock = threading.Lock()
+# Configuración del broker MQTT
+broker_address = "broker.hivemq.com"
+port = 1883
+topic = "mateo"
+#Topico al que se enviará la información
+topic_diferencia_metadatos = "metadatos"
 
-# Configuración para enviar el correo
-# Configuración para enviar el correo
-correo_emisor = 'mmales385@gmail.com'
-contrasena_emisor = 'acir fpif edes uzsq'
-correo_destino = 'mateomales2003@gmail.com'
+# Configuración de la base de datos MySQL
+db_host = "tu_host"
+db_user = "tu_usuario"
+db_password = "tu_contraseña"
+db_name = "nombre_de_tu_base_de_datos"
 
-def enviar_correo(asunto, mensaje):
-    mensaje_correo = MIMEText(mensaje)
-    mensaje_correo['Subject'] = asunto
-    mensaje_correo['From'] = correo_emisor
-    mensaje_correo['To'] = correo_destino
+# Configuración del servidor SMTP para enviar correos
+smtp_server = "smtp.gmail.com"
+smtp_port = 587
+smtp_username = "mmales385@gmail.com"
+smtp_password = "acir fpif edes uzsq"
+recipient_email = "mateomales2003@gmail.com"
 
+# Función para conectar a la base de datos
+def conectar_base_de_datos():
     try:
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as servidor_smtp:
-            servidor_smtp.login(correo_emisor, contrasena_emisor)
-            servidor_smtp.sendmail(correo_emisor, correo_destino, mensaje_correo.as_string())
+        connection = mysql.connector.connect(
+            host=db_host,
+            user=db_user,
+            password=db_password,
+            database=db_name
+        )
+        return connection
+    except mysql.connector.Error as err:
+        print(f"Error al conectar a la base de datos: {err}")
+        return None
 
-        print("Correo enviado exitosamente.")
-    except Exception as e:
-        print(f"Error al enviar el correo: {e}")
+# Función para obtener la fecha actual
+def obtener_fecha_actual():
+    return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-
+# Función que se ejecuta cuando se conecta al broker
 def on_connect(client, userdata, flags, rc):
-    with print_lock:
-        print(f"Conectado con código de resultado {rc}")
-    client.subscribe("metadatos")
-    client.subscribe("diferencia_metadatos")
+    print(f"Conectado con código de resultado {rc}")
+    client.subscribe(topic)
 
+# Función que se ejecuta cuando se recibe un mensaje
 def on_message(client, userdata, msg):
-    with print_lock:
-        print(f"Mensaje recibido: {msg.payload.decode()}")
+    fecha_actual = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    mensaje_completo = f"\nMensaje recibido el {fecha_actual}:\n {msg.payload.decode()}"
+    print(mensaje_completo)
 
-def recibir_mensajes(client):
-    while True:
-        time.sleep(1)  # Añade un pequeño retardo para evitar que bloquee completamente el programa
-        client.loop()
 
+# Función para obtener el rendimiento del CPU
 def obtener_rendimiento_cpu():
     return psutil.cpu_percent(interval=1)
 
+# Función para obtener el rendimiento de la memoria
 def obtener_rendimiento_memoria():
     return psutil.virtual_memory().percent
 
+# Función para obtener el rendimiento de la red
 def obtener_rendimiento_red():
-    sent_before, recv_before = psutil.net_io_counters().bytes_sent, psutil.net_io_counters().bytes_recv
-    psutil.cpu_percent(interval=1)  # Actualiza las métricas mientras esperamos
-    sent_after, recv_after = psutil.net_io_counters().bytes_sent, psutil.net_io_counters().bytes_recv
+    return psutil.net_io_counters().bytes_recv / 1024**3
 
-    # Calcular la tasa de transferencia en bytes por segundo
-    tasa_envio = sent_after - sent_before
-    tasa_recibo = recv_after - recv_before
-
-    return tasa_envio, tasa_recibo
-
+# Función para obtener el sistema operativo
 def obtener_sistema_operativo():
     return platform.system()
 
-def obtener_metadatos():
-    porcentaje_cpu = obtener_rendimiento_cpu()
-    rendimiento_memoria = obtener_rendimiento_memoria()
-    tasa_envio_local, tasa_recibo_local = obtener_rendimiento_red()
-    sistema_operativo = obtener_sistema_operativo()
+# Función para enviar un correo de alerta
+def enviar_alerta():
+    subject = "Alerta: Rendimiento del CPU superior al 40%"
+    body = "El rendimiento del CPU ha superado el 40%. Verifica el estado de la computadora."
 
-    mensaje = f"Rendimiento CPU (%): {porcentaje_cpu}%\n" \
-              f"Rendimiento de memoria: {rendimiento_memoria}%\n" \
-              f"Tasa de Transferencia - Enviados (bytes/segundo): {tasa_envio_local}\n" \
-              f"Tasa de Transferencia - Recibidos (bytes/segundo): {tasa_recibo_local}\n" \
-              f"Sistema Operativo: {sistema_operativo}"
+    # Configuración del mensaje
+    msg = MIMEMultipart()
+    msg['From'] = smtp_username
+    msg['To'] = recipient_email
+    msg['Subject'] = subject
+    msg.attach(MIMEText(body, 'plain'))
 
-    return mensaje
+    # Conexión al servidor SMTP y envío del correo
+    with smtplib.SMTP(smtp_server, smtp_port) as server:
+        server.starttls()
+        server.login(smtp_username, smtp_password)
+        server.sendmail(smtp_username, recipient_email, msg.as_string())
 
-def obtener_campos_metadatos(metadatos):
-    campos = {}
-    for linea in metadatos.split('\n'):
-        if ':' in linea:
-            clave, valor = [parte.strip() for parte in linea.split(':', 1)]
-            campos[clave] = valor
-    return campos
+    print("Correo de alerta enviado.")
 
-def calcular_diferencia_metadatos(metadatos_local, metadatos_remoto):
-    campos_local = obtener_campos_metadatos(metadatos_local)
-    campos_remoto = obtener_campos_metadatos(metadatos_remoto)
+# Función para verificar y enviar alerta si el rendimiento del CPU es mayor al 40%
+def verificar_y_enviar_alerta(mensaje):
+    # Busca la línea que contiene el rendimiento del CPU en el mensaje
+    linea_cpu = next((linea for linea in mensaje.split('\n') if 'Rendimiento del CPU' in linea), None)
 
-    diferencia = {}
-    for clave, valor_local in campos_local.items():
-        if clave in campos_remoto:
-            valor_remoto = campos_remoto[clave]
-            if valor_local != valor_remoto:
-                diferencia[clave] = (valor_local, valor_remoto)
+    if linea_cpu:
+        try:
+            # Extrae el valor del rendimiento del CPU y lo convierte a float
+            rendimiento_cpu = float(linea_cpu.split(":")[1].strip().replace("%", ""))
+            if rendimiento_cpu > 40:
+                enviar_alerta()
+        except ValueError:
+            print("Error al convertir el rendimiento del CPU a un número.")
 
-    if diferencia:
-        diferencia_str = "Diferencia de Metadatos:\n"
-        for clave, valores in diferencia.items():
-            diferencia_str += f"{clave}:\n  Local: {valores[0]}\n  Remoto: {valores[1]}\n"
-        return diferencia_str
-    else:
-        return "No hay diferencia en los metadatos."
+# Función para calcular la diferencia entre dos conjuntos de metadatos y enviarla
+def calcular_diferencia_y_enviar(mensaje):
+    # Recolecta datos de rendimiento del segundo equipo
+    rendimiento_cpu_segundo_equipo = obtener_rendimiento_cpu()
+    rendimiento_memoria_segundo_equipo = obtener_rendimiento_memoria()
+    rendimiento_red_segundo_equipo = obtener_rendimiento_red()
+    sistema_operativo_segundo_equipo = obtener_sistema_operativo()
+
+    # Formatea los datos como un mensaje del segundo equipo
+    mensaje_segundo_equipo = (
+        f"Rendimiento del CPU (%): {rendimiento_cpu_segundo_equipo}\n"
+        f"Rendimiento de la Memoria (%): {rendimiento_memoria_segundo_equipo}\n"
+        f"Rendimiento de la Red (GB): {rendimiento_red_segundo_equipo}\n"
+        f"Sistema Operativo: {sistema_operativo_segundo_equipo}"
+    )
+
+    # Calcula la diferencia entre los dos conjuntos de metadatos
+    diferencia_metadatos = "Diferencia en metadatos:\n"
+    for linea_equipo1, linea_equipo2 in zip(mensaje.split('\n'), mensaje_segundo_equipo.split('\n')):
+        if ':' in linea_equipo1 and ':' in linea_equipo2:
+            clave1, valor1 = [parte.strip() for parte in linea_equipo1.split(':')]
+            clave2, valor2 = [parte.strip() for parte in linea_equipo2.split(':')]
+            if clave1 == clave2:
+                try:
+                    diferencia = float(valor1.replace('%', '')) - float(valor2.replace('%', ''))
+                    diferencia_metadatos += f"{clave1}: {diferencia}\n"
+                except ValueError:
+                    print(f"Error al calcular la diferencia para {clave1}.")
+
+    # Enviar la diferencia al tópico correspondiente
+    client.publish(topic_diferencia_metadatos, diferencia_metadatos)
+    print("Diferencia de metadatos enviada:\n", diferencia_metadatos)
 
 
-# Variable para controlar si se debe monitorear el uso de la CPU
-monitorear_cpu = False
+# Configuración del cliente MQTT
+client = mqtt.Client()
+client.on_connect = on_connect
+client.on_message = on_message
 
-def monitorear_uso_cpu():
-    
-    global monitorear_cpu
+# Conexión al broker
+client.connect(broker_address, port, 60)
+client.loop_start()
 
-    while True:
-        if monitorear_cpu:
-            porcentaje_cpu = obtener_rendimiento_cpu()
-            with print_lock:
-                print(f'Uso actual de CPU: {porcentaje_cpu}%')
-
-            if porcentaje_cpu > 40:
-                enviar_correo('Alerta de Uso de CPU', f'El uso del CPU ha excedido el 40% ({porcentaje_cpu}%)')
-
-            # Reinicia la variable para que vuelva a monitorear si es necesario
-            monitorear_cpu = False
-
-        time.sleep(1)  # Esperar 1 segundo antes de verificar nuevamente
-
-if __name__ == "__main__":
-    # Configuración del cliente MQTT
-    client = mqtt.Client()
-    client.on_connect = on_connect
-    client.on_message = on_message
-    client.connect("broker.hivemq.com", 1883, 60)  # Cambia por tu broker o utiliza un broker local
-
-    # Inicia un hilo para la recepción de mensajes MQTT
-    mqtt_thread = threading.Thread(target=recibir_mensajes, args=(client,))
-    mqtt_thread.start()
-
-    # Inicia un hilo para monitorear el uso de la CPU
-    cpu_monitor_thread = threading.Thread(target=monitorear_uso_cpu)
-    cpu_monitor_thread.start()
 try:
     while True:
-        input("Presiona Enter para obtener información del sistema:\n")
-        metadatos_local = obtener_metadatos()
-        client.publish("metadatos", metadatos_local)  # Publica metadatos local en el tópico "metadatos"
+        # Recolecta datos de rendimiento
+        rendimiento_cpu = obtener_rendimiento_cpu()
+        rendimiento_memoria = obtener_rendimiento_memoria()
+        rendimiento_red = obtener_rendimiento_red()
+        sistema_operativo = obtener_sistema_operativo()
+        fecha_actual = obtener_fecha_actual()  # Agrega la fecha actual
 
-        # Simulación de recepción de metadatos remotos desde otro equipo (cámbialo según tus necesidades)
-        metadatos_remoto = f"Rendimiento CPU (%): {80}\nRendimiento de memoria: {60}\nTasa de Transferencia - Enviados (bytes/segundo): {500}\nTasa de Transferencia - Recibidos (bytes/segundo): {300}\nSistema Operativo: Windows"
+        # Formatea los datos como un mensaje
+        mensaje = (
+            f"Fecha y Hora del mensaje: {fecha_actual}\n"
+            f"Rendimiento del CPU (%): {rendimiento_cpu}\n"
+            f"Rendimiento de la Memoria (%): {rendimiento_memoria}\n"
+            f"Rendimiento de la Red (GB): {rendimiento_red}\n"
+            f"Sistema Operativo: {sistema_operativo}"
+        )
 
-        # Calcula la diferencia de metadatos
-        diferencia_metadatos = calcular_diferencia_metadatos(metadatos_local, metadatos_remoto)
+        # Envia el mensaje al broker MQTT
+        client.publish(topic, mensaje)
 
-        # Verifica si hay alguna diferencia antes de proceder
-        if diferencia_metadatos:
-            # Muestra los rendimientos y la diferencia de metadatos en pantalla
-            with print_lock:
-                # Pregunta al usuario a qué tópico quiere enviar la diferencia de metadatos
-                tópico_destino = input("\nIngrese el tópico de destino para la diferencia de metadatos:\n")
+        # Limpia el búfer de la consola
+        os.system('cls' if os.name == 'nt' else 'clear')
 
-            # Publica la diferencia de metadatos en el tópico especificado por el usuario
-            client.publish(tópico_destino, diferencia_metadatos)
-        else:
-            with print_lock:
-                print("No hay diferencia en los metadatos.")
+        # Imprime el mensaje para el usuario
+        print("Mensaje enviado:\n", mensaje)
 
-        # Pregunta al usuario si desea monitorear el uso de la CPU
-        respuesta = input("¿Desea monitorear el uso de la CPU? (Sí/No): ").lower()
-        if respuesta == "si":
-            # Establece la variable para iniciar el monitoreo
-            monitorear_cpu = True
+        # Verifica y envía una alerta si es necesario
+        verificar_y_enviar_alerta(mensaje)
 
-        # Espera un poco para que el otro sistema también publique sus metadatos
-        time.sleep(1)
+        # Espera a que el usuario presione ENTER para enviar el siguiente mensaje
+        input("\nPresiona ENTER para enviar el siguiente mensaje...\n")
+
 
 except KeyboardInterrupt:
     # Desconectar al recibir una interrupción del teclado (Ctrl+C)
     client.disconnect()
     client.loop_stop()
-    mqtt_thread.join()  # Espera a que el hilo de MQTT termine
-    cpu_monitor_thread.join()  # Espera a que el hilo de monitoreo termine
