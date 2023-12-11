@@ -1,5 +1,5 @@
 # Intercambio-MQTT
 
-Integrants 
+Integrantes 
 -Mateo Males
 -Cristopher Alquinga
